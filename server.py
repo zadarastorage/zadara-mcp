@@ -789,33 +789,59 @@ async def call_tool(name: str, arguments: Any) -> list[TextContent]:
                     
                     # Parse S3 ListBucket response
                     objects = []
-                    namespace = {'s3': 'http://s3.amazonaws.com/doc/2006-03-01/'}
                     
-                    # Try with and without namespace
+                    # Try different XML structures
+                    # First try with namespace
+                    namespace = {'s3': 'http://s3.amazonaws.com/doc/2006-03-01/'}
                     contents = root.findall('.//s3:Contents', namespace)
+                    
+                    # If not found, try without namespace
                     if not contents:
                         contents = root.findall('.//Contents')
                     
+                    # If still not found, try root level Contents
+                    if not contents:
+                        for child in root:
+                            if child.tag.endswith('Contents') or child.tag == 'Contents':
+                                contents.append(child)
+                    
                     for content in contents:
-                        key_elem = content.find('s3:Key', namespace) or content.find('Key')
-                        size_elem = content.find('s3:Size', namespace) or content.find('Size')
-                        modified_elem = content.find('s3:LastModified', namespace) or content.find('LastModified')
+                        # Try to find Key
+                        key_elem = None
+                        size_elem = None
+                        modified_elem = None
                         
-                        obj = {
-                            "Key": key_elem.text if key_elem is not None else "",
-                            "Size": int(size_elem.text) if size_elem is not None and size_elem.text else 0,
-                            "LastModified": modified_elem.text if modified_elem is not None else ""
-                        }
-                        objects.append(obj)
+                        for child in content:
+                            tag = child.tag.split('}')[-1]  # Remove namespace if present
+                            if tag == 'Key':
+                                key_elem = child
+                            elif tag == 'Size':
+                                size_elem = child
+                            elif tag == 'LastModified':
+                                modified_elem = child
+                        
+                        # Only add if we found a Key
+                        if key_elem is not None and key_elem.text:
+                            obj = {
+                                "Key": key_elem.text,
+                                "Size": int(size_elem.text) if size_elem is not None and size_elem.text else 0,
+                                "LastModified": modified_elem.text if modified_elem is not None and modified_elem.text else ""
+                            }
+                            objects.append(obj)
                     
                     formatted_result = {
                         "Bucket": bucket_name,
                         "Objects": objects,
                         "Count": len(objects)
                     }
+                    
+                    # If no objects found, show raw XML for debugging
+                    if len(objects) == 0:
+                        return [TextContent(type="text", text=f"No objects found. Raw XML for debugging:\n\n{result['xml_content']}")]
+                    
                     return [TextContent(type="text", text=json.dumps(formatted_result, indent=2))]
                 except Exception as e:
-                    return [TextContent(type="text", text=f"XML parsing error: {str(e)}\n\nRaw response:\n{result['xml_content']}")]
+                    return [TextContent(type="text", text=f"XML parsing error: {str(e)}\n\nRaw XML response:\n{result['xml_content']}")]
             
             return [TextContent(type="text", text=json.dumps(result, indent=2))]
         
