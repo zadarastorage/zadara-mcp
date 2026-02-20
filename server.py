@@ -140,32 +140,49 @@ class ZadaraClient:
         method: str,
         endpoint: str,
         data: Optional[dict] = None,
-        params: Optional[dict] = None
+        params: Optional[dict] = None,
+        content_type: str = "application/json"
     ) -> dict:
-        """Make a request to Object Storage API"""
+        """Make a request to Object Storage API with AWS Signature V4"""
         if not self.object_storage_url:
             raise ValueError("Object Storage URL not configured")
         
         url = urljoin(self.object_storage_url, endpoint)
+        
+        # Prepare request body
+        body = b""
+        if data:
+            body = json.dumps(data).encode('utf-8')
+        
+        # Prepare headers for AWS Signature V4
         headers = {
-            "Content-Type": "application/json"
+            "Content-Type": content_type
         }
         
-        # Add AWS S3-style authentication if credentials are provided
+        # Add AWS Signature V4 authentication if credentials are provided
         if self.object_access_key and self.object_secret_key:
-            headers["Authorization"] = f"AWS {self.object_access_key}:{self.object_secret_key}"
+            headers = self._sign_aws_request(method, url, headers, body)
         
         async with httpx.AsyncClient() as client:
             response = await client.request(
                 method=method,
                 url=url,
                 headers=headers,
-                json=data,
+                content=body if body else None,
                 params=params,
                 timeout=30.0
             )
             response.raise_for_status()
-            return response.json()
+            
+            # Handle different response types
+            content_type_header = response.headers.get("content-type", "")
+            if "application/json" in content_type_header:
+                return response.json()
+            elif "application/xml" in content_type_header or "text/xml" in content_type_header:
+                # For XML responses (like S3 ListBucket), return the text
+                return {"xml_content": response.text}
+            else:
+                return {"content": response.text, "status_code": response.status_code}
     
     async def upload_object(
         self,
@@ -763,6 +780,43 @@ async def call_tool(name: str, arguments: Any) -> list[TextContent]:
                 params["max-keys"] = arguments["max_keys"]
             
             result = await client.object_storage_request("GET", f"/{bucket_name}", params=params)
+            
+            # Parse XML response if present
+            if "xml_content" in result:
+                try:
+                    import xml.etree.ElementTree as ET
+                    root = ET.fromstring(result["xml_content"])
+                    
+                    # Parse S3 ListBucket response
+                    objects = []
+                    namespace = {'s3': 'http://s3.amazonaws.com/doc/2006-03-01/'}
+                    
+                    # Try with and without namespace
+                    contents = root.findall('.//s3:Contents', namespace)
+                    if not contents:
+                        contents = root.findall('.//Contents')
+                    
+                    for content in contents:
+                        key_elem = content.find('s3:Key', namespace) or content.find('Key')
+                        size_elem = content.find('s3:Size', namespace) or content.find('Size')
+                        modified_elem = content.find('s3:LastModified', namespace) or content.find('LastModified')
+                        
+                        obj = {
+                            "Key": key_elem.text if key_elem is not None else "",
+                            "Size": int(size_elem.text) if size_elem is not None and size_elem.text else 0,
+                            "LastModified": modified_elem.text if modified_elem is not None else ""
+                        }
+                        objects.append(obj)
+                    
+                    formatted_result = {
+                        "Bucket": bucket_name,
+                        "Objects": objects,
+                        "Count": len(objects)
+                    }
+                    return [TextContent(type="text", text=json.dumps(formatted_result, indent=2))]
+                except Exception as e:
+                    return [TextContent(type="text", text=f"XML parsing error: {str(e)}\n\nRaw response:\n{result['xml_content']}")]
+            
             return [TextContent(type="text", text=json.dumps(result, indent=2))]
         
         elif name == "object_get_bucket_policy":

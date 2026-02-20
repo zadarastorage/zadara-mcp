@@ -5,6 +5,23 @@ All notable changes to the Zadara Storage MCP Server will be documented in this 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.0] - 2026-02-20
+
+### Changed
+- **Object Listing with AWS Signature V4**: Updated `object_storage_request()` method to use AWS Signature V4 authentication for all operations
+- Enhanced `object_list_objects` to properly parse XML responses from S3-compatible API
+- Improved error handling for different response content types (JSON, XML, text)
+
+### Fixed
+- Fixed 403 Forbidden errors when listing objects in buckets
+- Fixed bucket policy and versioning operations authentication
+- All object storage operations now use consistent AWS Signature V4 authentication
+
+### Technical
+- Added XML parsing for S3 ListBucket responses
+- Added support for different content-type responses in `object_storage_request()`
+- Improved response handling with proper content-type detection
+
 ## [1.1.0] - 2026-02-20
 
 ### Added
