@@ -137,6 +137,69 @@ Example parameters:
 - Prefix: "images/" (optional filter)
 - Max keys: 100 (optional limit)
 
+#### Upload Objects
+```
+"Upload a PDF file to bucket 'documents'"
+"Store this image in bucket 'media-storage' as 'photos/vacation.jpg'"
+"Upload empty_document.pdf to the uk-test bucket"
+```
+
+**How it works:**
+- Files are encoded as base64 before upload
+- Supports any file type via content_type parameter
+- Uses AWS Signature V4 authentication for security
+
+Example:
+```
+User: "Generate a PDF and upload it to bucket 'reports'"
+Claude: [generates PDF, encodes as base64, uploads using object_upload tool]
+```
+
+**Supported Content Types:**
+- `application/pdf` - PDF documents
+- `image/jpeg`, `image/png` - Images
+- `application/json` - JSON files
+- `text/plain` - Text files
+- `application/octet-stream` - Binary files (default)
+
+#### Download Objects
+```
+"Download the file 'report.pdf' from bucket 'documents'"
+"Get object 'data.json' from bucket 'backups'"
+"Retrieve the image at 'photos/vacation.jpg' from 'media-storage'"
+```
+
+**How it works:**
+- Files are downloaded and encoded as base64
+- Returns file content with metadata (size, content type)
+- Uses AWS Signature V4 authentication for security
+
+Example:
+```
+User: "Download empty_document.pdf from uk-test bucket"
+Claude: [downloads file, returns base64 content and metadata]
+```
+
+#### Delete Objects
+```
+"Delete the file 'old-report.pdf' from bucket 'documents'"
+"Remove object 'temp.dat' from bucket 'temporary'"
+"Delete empty_document.pdf from uk-test bucket"
+```
+
+⚠️ **Warning**: This permanently deletes the object!
+
+**How it works:**
+- Objects are permanently deleted from storage
+- Cannot be recovered after deletion
+- Uses AWS Signature V4 authentication for security
+
+Example:
+```
+User: "Delete all test files from bucket 'development'"
+Claude: "I can help delete specific files. Which test files should I remove?"
+```
+
 ### Bucket Policies
 
 #### Get Bucket Policy
@@ -231,6 +294,38 @@ Example for POST:
 2. "Enable versioning on bucket 'new-project-data'"
 3. "Set bucket policy for 'new-project-data' to allow team access"
 4. "List objects in 'new-project-data' to verify"
+```
+
+#### Document Upload and Management Workflow
+```
+1. "Create a bucket called 'company-docs'"
+2. "Generate a PDF report and upload it to 'company-docs'"
+3. "List all files in 'company-docs' bucket"
+4. "Download the report PDF from 'company-docs'"
+5. "Delete old files from 'company-docs'"
+```
+
+Example session:
+```
+User: "Create a test bucket called 'uk-test'"
+Claude: ✓ Bucket 'uk-test' created
+
+User: "Generate an empty PDF and store it in uk-test bucket"
+Claude: [generates PDF, encodes as base64, uploads]
+✓ PDF uploaded successfully (1,437 bytes)
+
+User: "List what's in the uk-test bucket"
+Claude: [lists objects]
+- empty_document.pdf (1.4 KB)
+```
+
+#### Backup and Archive Workflow
+```
+1. "Create bucket 'daily-backups'"
+2. "Enable versioning on 'daily-backups'"
+3. "Upload backup files to 'daily-backups/2024-02-20/'"
+4. "Download yesterday's backup for verification"
+5. "Delete backups older than 30 days"
 ```
 
 ## Natural Language Examples

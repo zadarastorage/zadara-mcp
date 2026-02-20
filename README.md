@@ -15,6 +15,9 @@ An MCP (Model Context Protocol) server that provides access to Zadara Storage AP
 
 ### Object Storage Support
 - List, create, and delete buckets
+- **Upload objects to buckets (with AWS Signature V4 authentication)**
+- **Download objects from buckets (with AWS Signature V4 authentication)**
+- **Delete objects from buckets (with AWS Signature V4 authentication)**
 - List objects in buckets
 - Get and set bucket policies
 - Get and set bucket versioning
@@ -173,6 +176,37 @@ List objects in a bucket.
 - `prefix` (optional): Prefix filter for object keys
 - `max_keys` (optional): Maximum number of keys to return
 
+#### `object_upload`
+Upload an object to object storage.
+
+**Parameters:**
+- `bucket_name` (required): Name of the bucket
+- `object_key` (required): Object key/path (e.g., 'document.pdf' or 'folder/file.txt')
+- `content_base64` (required): Base64-encoded file content
+- `content_type` (optional): MIME type (default: application/octet-stream)
+
+**Note:** This tool uses AWS Signature V4 authentication for secure uploads.
+
+#### `object_download`
+Download an object from object storage.
+
+**Parameters:**
+- `bucket_name` (required): Name of the bucket
+- `object_key` (required): Object key/path
+
+**Returns:** Base64-encoded file content with metadata
+
+**Note:** This tool uses AWS Signature V4 authentication for secure downloads.
+
+#### `object_delete`
+Delete an object from object storage.
+
+**Parameters:**
+- `bucket_name` (required): Name of the bucket
+- `object_key` (required): Object key/path to delete
+
+**Note:** This tool uses AWS Signature V4 authentication for secure deletions.
+
 #### `object_get_bucket_policy`
 Get the policy of a bucket.
 
@@ -232,9 +266,14 @@ For detailed API documentation, refer to:
 The VPSA API uses API key authentication via the `X-Access-Key` header.
 
 ### Object Storage
-The Object Storage API uses AWS S3-compatible authentication. You can use:
-- Access Key and Secret Key for AWS Signature authentication
-- Or configure your endpoint URL to use pre-signed URLs
+The Object Storage API uses AWS S3-compatible authentication with **AWS Signature Version 4**:
+- Access Key and Secret Key are used to generate request signatures
+- Each request is signed with HMAC-SHA256
+- Payload hashing ensures data integrity
+- Canonical headers include host, date, and content hash
+- Compatible with standard S3 authentication
+
+**Object operations (upload, download, delete)** use AWS Signature V4 for enhanced security and compatibility with S3-compatible tools.
 
 ## Error Handling
 

@@ -8,14 +8,16 @@ This MCP server provides access to Zadara Storage APIs:
 """
 
 import asyncio
+import base64
+import hashlib
+import hmac
 import json
 import os
+from datetime import datetime
 from typing import Any, Optional
-from urllib.parse import urljoin
+from urllib.parse import urljoin, urlparse
 
-import boto3
 import httpx
-from botocore.exceptions import ClientError
 from mcp.server import Server
 from mcp.server.stdio import stdio_server
 from mcp.types import (
@@ -47,18 +49,62 @@ class ZadaraClient:
         self.object_storage_url = OBJECT_STORAGE_URL
         self.object_access_key = OBJECT_STORAGE_ACCESS_KEY
         self.object_secret_key = OBJECT_STORAGE_SECRET_KEY
+    
+    def _sign_aws_request(
+        self,
+        method: str,
+        url: str,
+        headers: dict,
+        payload: bytes = b""
+    ) -> dict:
+        """Generate AWS Signature V4 for request"""
+        if not self.object_access_key or not self.object_secret_key:
+            return headers
         
-        # Initialize boto3 S3 client for object storage
-        self.s3_client = None
-        if self.object_storage_url and self.object_access_key and self.object_secret_key:
-            self.s3_client = boto3.client(
-                's3',
-                endpoint_url=self.object_storage_url,
-                aws_access_key_id=self.object_access_key,
-                aws_secret_access_key=self.object_secret_key,
-                region_name='us-east-1',  # Default region for S3-compatible storage
-                config=boto3.session.Config(signature_version='s3v4')
-            )
+        parsed = urlparse(url)
+        host = parsed.netloc
+        path = parsed.path or "/"
+        
+        # Current timestamp
+        now = datetime.utcnow()
+        amz_date = now.strftime("%Y%m%dT%H%M%SZ")
+        date_stamp = now.strftime("%Y%m%d")
+        
+        # Calculate payload hash
+        payload_hash = hashlib.sha256(payload).hexdigest()
+        
+        # Canonical headers
+        canonical_headers = f"host:{host}\nx-amz-content-sha256:{payload_hash}\nx-amz-date:{amz_date}\n"
+        signed_headers = "host;x-amz-content-sha256;x-amz-date"
+        
+        # Canonical request
+        canonical_request = f"{method}\n{path}\n\n{canonical_headers}\n{signed_headers}\n{payload_hash}"
+        
+        # String to sign
+        algorithm = "AWS4-HMAC-SHA256"
+        credential_scope = f"{date_stamp}/us-east-1/s3/aws4_request"
+        string_to_sign = f"{algorithm}\n{amz_date}\n{credential_scope}\n{hashlib.sha256(canonical_request.encode()).hexdigest()}"
+        
+        # Calculate signature
+        def sign(key, msg):
+            return hmac.new(key, msg.encode(), hashlib.sha256).digest()
+        
+        k_date = sign(f"AWS4{self.object_secret_key}".encode(), date_stamp)
+        k_region = sign(k_date, "us-east-1")
+        k_service = sign(k_region, "s3")
+        k_signing = sign(k_service, "aws4_request")
+        signature = hmac.new(k_signing, string_to_sign.encode(), hashlib.sha256).hexdigest()
+        
+        # Authorization header
+        authorization = f"{algorithm} Credential={self.object_access_key}/{credential_scope}, SignedHeaders={signed_headers}, Signature={signature}"
+        
+        # Update headers
+        headers["Authorization"] = authorization
+        headers["x-amz-date"] = amz_date
+        headers["x-amz-content-sha256"] = payload_hash
+        headers["Host"] = host
+        
+        return headers
     
     async def vpsa_request(
         self,
@@ -88,6 +134,133 @@ class ZadaraClient:
             )
             response.raise_for_status()
             return response.json()
+    
+    async def object_storage_request(
+        self,
+        method: str,
+        endpoint: str,
+        data: Optional[dict] = None,
+        params: Optional[dict] = None
+    ) -> dict:
+        """Make a request to Object Storage API"""
+        if not self.object_storage_url:
+            raise ValueError("Object Storage URL not configured")
+        
+        url = urljoin(self.object_storage_url, endpoint)
+        headers = {
+            "Content-Type": "application/json"
+        }
+        
+        # Add AWS S3-style authentication if credentials are provided
+        if self.object_access_key and self.object_secret_key:
+            headers["Authorization"] = f"AWS {self.object_access_key}:{self.object_secret_key}"
+        
+        async with httpx.AsyncClient() as client:
+            response = await client.request(
+                method=method,
+                url=url,
+                headers=headers,
+                json=data,
+                params=params,
+                timeout=30.0
+            )
+            response.raise_for_status()
+            return response.json()
+    
+    async def upload_object(
+        self,
+        bucket_name: str,
+        object_key: str,
+        content: bytes,
+        content_type: str = "application/octet-stream"
+    ) -> dict:
+        """Upload an object to Object Storage"""
+        if not self.object_storage_url:
+            raise ValueError("Object Storage URL not configured")
+        
+        url = urljoin(self.object_storage_url, f"/{bucket_name}/{object_key}")
+        headers = {
+            "Content-Type": content_type,
+            "Content-Length": str(len(content))
+        }
+        
+        # Sign the request with AWS Signature V4
+        headers = self._sign_aws_request("PUT", url, headers, content)
+        
+        async with httpx.AsyncClient() as client:
+            response = await client.put(
+                url=url,
+                content=content,
+                headers=headers,
+                timeout=60.0
+            )
+            response.raise_for_status()
+            return {
+                "status_code": response.status_code,
+                "headers": dict(response.headers),
+                "bucket": bucket_name,
+                "key": object_key,
+                "size": len(content)
+            }
+    
+    async def download_object(
+        self,
+        bucket_name: str,
+        object_key: str
+    ) -> dict:
+        """Download an object from Object Storage"""
+        if not self.object_storage_url:
+            raise ValueError("Object Storage URL not configured")
+        
+        url = urljoin(self.object_storage_url, f"/{bucket_name}/{object_key}")
+        headers = {}
+        
+        # Sign the request with AWS Signature V4
+        headers = self._sign_aws_request("GET", url, headers)
+        
+        async with httpx.AsyncClient() as client:
+            response = await client.get(
+                url=url,
+                headers=headers,
+                timeout=60.0
+            )
+            response.raise_for_status()
+            return {
+                "status_code": response.status_code,
+                "headers": dict(response.headers),
+                "content": response.content,
+                "content_type": response.headers.get("content-type", ""),
+                "size": len(response.content)
+            }
+    
+    async def delete_object(
+        self,
+        bucket_name: str,
+        object_key: str
+    ) -> dict:
+        """Delete an object from Object Storage"""
+        if not self.object_storage_url:
+            raise ValueError("Object Storage URL not configured")
+        
+        url = urljoin(self.object_storage_url, f"/{bucket_name}/{object_key}")
+        headers = {}
+        
+        # Sign the request with AWS Signature V4
+        headers = self._sign_aws_request("DELETE", url, headers)
+        
+        async with httpx.AsyncClient() as client:
+            response = await client.delete(
+                url=url,
+                headers=headers,
+                timeout=30.0
+            )
+            response.raise_for_status()
+            return {
+                "status_code": response.status_code,
+                "headers": dict(response.headers),
+                "bucket": bucket_name,
+                "key": object_key
+            }
 
 
 # Initialize client
@@ -368,6 +541,68 @@ async def list_tools() -> list[Tool]:
             }
         ),
         Tool(
+            name="object_upload",
+            description="Upload an object to object storage. Provide file content as base64-encoded string.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "bucket_name": {
+                        "type": "string",
+                        "description": "Name of the bucket"
+                    },
+                    "object_key": {
+                        "type": "string",
+                        "description": "Object key/path (e.g., 'document.pdf' or 'folder/file.txt')"
+                    },
+                    "content_base64": {
+                        "type": "string",
+                        "description": "Base64-encoded file content"
+                    },
+                    "content_type": {
+                        "type": "string",
+                        "description": "MIME type (default: application/octet-stream)"
+                    }
+                },
+                "required": ["bucket_name", "object_key", "content_base64"]
+            }
+        ),
+        Tool(
+            name="object_download",
+            description="Download an object from object storage. Returns base64-encoded content.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "bucket_name": {
+                        "type": "string",
+                        "description": "Name of the bucket"
+                    },
+                    "object_key": {
+                        "type": "string",
+                        "description": "Object key/path"
+                    }
+                },
+                "required": ["bucket_name", "object_key"]
+            }
+        ),
+        Tool(
+            name="object_delete",
+            description="Delete an object from object storage",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "bucket_name": {
+                        "type": "string",
+                        "description": "Name of the bucket"
+                    },
+                    "object_key": {
+                        "type": "string",
+                        "description": "Object key/path to delete"
+                    }
+                },
+                "required": ["bucket_name", "object_key"]
+            }
+        ),
+        Tool(
             name="vpsa_custom_request",
             description="Make a custom API request to VPSA Storage Array. Use this for endpoints not covered by other tools.",
             inputSchema={
@@ -500,91 +735,98 @@ async def call_tool(name: str, arguments: Any) -> list[TextContent]:
         
         # Object Storage Tools
         elif name == "object_list_buckets":
-            if not client.s3_client:
-                raise ValueError("Object Storage not configured")
-            
-            response = client.s3_client.list_buckets()
-            return [TextContent(type="text", text=json.dumps(response, indent=2, default=str))]
+            result = await client.object_storage_request("GET", "/")
+            return [TextContent(type="text", text=json.dumps(result, indent=2))]
         
         elif name == "object_create_bucket":
-            if not client.s3_client:
-                raise ValueError("Object Storage not configured")
-            
             bucket_name = arguments["bucket_name"]
-            kwargs = {"Bucket": bucket_name}
-            
+            data = {}
             if "region" in arguments:
-                kwargs["CreateBucketConfiguration"] = {
+                data["CreateBucketConfiguration"] = {
                     "LocationConstraint": arguments["region"]
                 }
             
-            response = client.s3_client.create_bucket(**kwargs)
-            return [TextContent(type="text", text=json.dumps(response, indent=2, default=str))]
+            result = await client.object_storage_request("PUT", f"/{bucket_name}", data=data)
+            return [TextContent(type="text", text=json.dumps(result, indent=2))]
         
         elif name == "object_delete_bucket":
-            if not client.s3_client:
-                raise ValueError("Object Storage not configured")
-            
             bucket_name = arguments["bucket_name"]
-            response = client.s3_client.delete_bucket(Bucket=bucket_name)
-            return [TextContent(type="text", text=json.dumps(response, indent=2, default=str))]
+            result = await client.object_storage_request("DELETE", f"/{bucket_name}")
+            return [TextContent(type="text", text=json.dumps(result, indent=2))]
         
         elif name == "object_list_objects":
-            if not client.s3_client:
-                raise ValueError("Object Storage not configured")
-            
             bucket_name = arguments["bucket_name"]
-            kwargs = {"Bucket": bucket_name}
-            
+            params = {}
             if "prefix" in arguments:
-                kwargs["Prefix"] = arguments["prefix"]
+                params["prefix"] = arguments["prefix"]
             if "max_keys" in arguments:
-                kwargs["MaxKeys"] = arguments["max_keys"]
+                params["max-keys"] = arguments["max_keys"]
             
-            response = client.s3_client.list_objects_v2(**kwargs)
-            return [TextContent(type="text", text=json.dumps(response, indent=2, default=str))]
+            result = await client.object_storage_request("GET", f"/{bucket_name}", params=params)
+            return [TextContent(type="text", text=json.dumps(result, indent=2))]
         
         elif name == "object_get_bucket_policy":
-            if not client.s3_client:
-                raise ValueError("Object Storage not configured")
-            
             bucket_name = arguments["bucket_name"]
-            response = client.s3_client.get_bucket_policy(Bucket=bucket_name)
-            return [TextContent(type="text", text=json.dumps(response, indent=2, default=str))]
+            result = await client.object_storage_request("GET", f"/{bucket_name}?policy")
+            return [TextContent(type="text", text=json.dumps(result, indent=2))]
         
         elif name == "object_set_bucket_policy":
-            if not client.s3_client:
-                raise ValueError("Object Storage not configured")
-            
             bucket_name = arguments["bucket_name"]
             policy = arguments["policy"]
-            # Convert policy dict to JSON string if needed
-            if isinstance(policy, dict):
-                policy = json.dumps(policy)
-            
-            response = client.s3_client.put_bucket_policy(Bucket=bucket_name, Policy=policy)
-            return [TextContent(type="text", text=json.dumps(response, indent=2, default=str))]
+            result = await client.object_storage_request("PUT", f"/{bucket_name}?policy", data=policy)
+            return [TextContent(type="text", text=json.dumps(result, indent=2))]
         
         elif name == "object_get_bucket_versioning":
-            if not client.s3_client:
-                raise ValueError("Object Storage not configured")
-            
             bucket_name = arguments["bucket_name"]
-            response = client.s3_client.get_bucket_versioning(Bucket=bucket_name)
-            return [TextContent(type="text", text=json.dumps(response, indent=2, default=str))]
+            result = await client.object_storage_request("GET", f"/{bucket_name}?versioning")
+            return [TextContent(type="text", text=json.dumps(result, indent=2))]
         
         elif name == "object_set_bucket_versioning":
-            if not client.s3_client:
-                raise ValueError("Object Storage not configured")
-            
             bucket_name = arguments["bucket_name"]
-            status = arguments["status"]
+            data = {
+                "VersioningConfiguration": {
+                    "Status": arguments["status"]
+                }
+            }
+            result = await client.object_storage_request("PUT", f"/{bucket_name}?versioning", data=data)
+            return [TextContent(type="text", text=json.dumps(result, indent=2))]
+        
+        elif name == "object_upload":
+            bucket_name = arguments["bucket_name"]
+            object_key = arguments["object_key"]
+            content_base64 = arguments["content_base64"]
+            content_type = arguments.get("content_type", "application/octet-stream")
             
-            response = client.s3_client.put_bucket_versioning(
-                Bucket=bucket_name,
-                VersioningConfiguration={"Status": status}
-            )
-            return [TextContent(type="text", text=json.dumps(response, indent=2, default=str))]
+            # Decode base64 content
+            content = base64.b64decode(content_base64)
+            
+            result = await client.upload_object(bucket_name, object_key, content, content_type)
+            return [TextContent(type="text", text=json.dumps(result, indent=2))]
+        
+        elif name == "object_download":
+            bucket_name = arguments["bucket_name"]
+            object_key = arguments["object_key"]
+            
+            result = await client.download_object(bucket_name, object_key)
+            
+            # Encode content as base64 for transport
+            content_base64 = base64.b64encode(result["content"]).decode()
+            
+            response = {
+                "bucket": bucket_name,
+                "key": object_key,
+                "content_type": result["content_type"],
+                "size": result["size"],
+                "content_base64": content_base64
+            }
+            return [TextContent(type="text", text=json.dumps(response, indent=2))]
+        
+        elif name == "object_delete":
+            bucket_name = arguments["bucket_name"]
+            object_key = arguments["object_key"]
+            
+            result = await client.delete_object(bucket_name, object_key)
+            return [TextContent(type="text", text=json.dumps(result, indent=2))]
         
         # Custom Request Tools
         elif name == "vpsa_custom_request":
@@ -597,7 +839,13 @@ async def call_tool(name: str, arguments: Any) -> list[TextContent]:
             return [TextContent(type="text", text=json.dumps(result, indent=2))]
         
         elif name == "object_custom_request":
-            return [TextContent(type="text", text="Custom object storage requests are not supported when using boto3. Please use specific tool methods instead.")]
+            method = arguments["method"]
+            endpoint = arguments["endpoint"]
+            data = arguments.get("data")
+            params = arguments.get("params")
+            
+            result = await client.object_storage_request(method, endpoint, data=data, params=params)
+            return [TextContent(type="text", text=json.dumps(result, indent=2))]
         
         else:
             return [TextContent(type="text", text=f"Unknown tool: {name}")]

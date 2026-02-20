@@ -106,9 +106,18 @@ Open Claude Desktop and try these commands:
 "List all volumes in my VPSA storage"
 "Show me all buckets in my object storage"
 "What storage pools are available?"
+"Create a bucket called 'test-bucket'"
+"Generate a simple PDF and upload it to 'test-bucket'"
 ```
 
 If Claude responds with data from your Zadara system, you're all set!
+
+**New in v1.1.0:** You can now upload, download, and delete files!
+```
+"Upload a document to my object storage"
+"Download the report.pdf from bucket 'documents'"
+"Delete old files from bucket 'archives'"
+```
 
 ## Common Issues
 
