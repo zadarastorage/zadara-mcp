@@ -620,6 +620,20 @@ async def list_tools() -> list[Tool]:
             }
         ),
         Tool(
+            name="object_get_bucket_sizes",
+            description="Calculate the total size of all buckets or specific buckets. Returns bucket names, object counts, total sizes, and formatted size strings.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "bucket_names": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Optional list of specific bucket names to calculate sizes for. If omitted, calculates sizes for all buckets."
+                    }
+                }
+            }
+        ),
+        Tool(
             name="vpsa_custom_request",
             description="Make a custom API request to VPSA Storage Array. Use this for endpoints not covered by other tools.",
             inputSchema={
@@ -906,6 +920,149 @@ async def call_tool(name: str, arguments: Any) -> list[TextContent]:
             object_key = arguments["object_key"]
             
             result = await client.delete_object(bucket_name, object_key)
+            return [TextContent(type="text", text=json.dumps(result, indent=2))]
+        
+        elif name == "object_get_bucket_sizes":
+            # Get list of buckets to process
+            bucket_names = arguments.get("bucket_names")
+            
+            if not bucket_names:
+                # Get all buckets
+                buckets_result = await client.object_storage_request("GET", "/")
+                
+                # Parse bucket names from XML
+                if "xml_content" in buckets_result:
+                    import xml.etree.ElementTree as ET
+                    root = ET.fromstring(buckets_result["xml_content"])
+                    namespace = {'s3': 'http://s3.amazonaws.com/doc/2006-03-01/'}
+                    
+                    bucket_names = []
+                    for bucket in root.findall('.//s3:Bucket', namespace):
+                        name_elem = bucket.find('s3:n', namespace)
+                        if name_elem is None:
+                            name_elem = bucket.find('.//n')
+                        if name_elem is not None and name_elem.text:
+                            bucket_names.append(name_elem.text)
+                    
+                    if not bucket_names:
+                        # Try without namespace
+                        for bucket in root.findall('.//Bucket'):
+                            for child in bucket:
+                                tag = child.tag.split('}')[-1]
+                                if tag in ['Name', 'n'] and child.text:
+                                    bucket_names.append(child.text)
+                                    break
+            
+            if not bucket_names:
+                return [TextContent(type="text", text="No buckets found")]
+            
+            # Calculate size for each bucket
+            bucket_stats = []
+            total_all_size = 0
+            total_all_objects = 0
+            
+            for bucket_name in bucket_names:
+                total_size = 0
+                total_objects = 0
+                continuation_token = None
+                error = None
+                
+                try:
+                    while True:
+                        params = {"list-type": "2", "max-keys": "1000"}
+                        if continuation_token:
+                            params["continuation-token"] = continuation_token
+                        
+                        result = await client.object_storage_request("GET", f"/{bucket_name}", params=params)
+                        
+                        if "xml_content" in result:
+                            import xml.etree.ElementTree as ET
+                            root = ET.fromstring(result["xml_content"])
+                            namespace = {'s3': 'http://s3.amazonaws.com/doc/2006-03-01/'}
+                            
+                            # Parse objects
+                            contents = root.findall('.//s3:Contents', namespace)
+                            if not contents:
+                                contents = root.findall('.//Contents')
+                            
+                            for content in contents:
+                                size_elem = None
+                                for child in content:
+                                    tag = child.tag.split('}')[-1]
+                                    if tag == 'Size' and child.text:
+                                        size_elem = child
+                                        break
+                                
+                                if size_elem is not None:
+                                    total_size += int(size_elem.text)
+                                    total_objects += 1
+                            
+                            # Check for pagination
+                            is_truncated = root.find('.//s3:IsTruncated', namespace)
+                            if is_truncated is None:
+                                is_truncated = root.find('.//IsTruncated')
+                            
+                            if is_truncated is not None and is_truncated.text == 'true':
+                                next_token = root.find('.//s3:NextContinuationToken', namespace)
+                                if next_token is None:
+                                    next_token = root.find('.//NextContinuationToken')
+                                
+                                if next_token is not None and next_token.text:
+                                    continuation_token = next_token.text
+                                else:
+                                    break
+                            else:
+                                break
+                        else:
+                            break
+                
+                except Exception as e:
+                    error = str(e)
+                
+                # Format size
+                if error:
+                    size_str = "Error"
+                elif total_size >= 1024**3:
+                    size_str = f"{total_size / 1024**3:.2f} GB"
+                elif total_size >= 1024**2:
+                    size_str = f"{total_size / 1024**2:.2f} MB"
+                elif total_size >= 1024:
+                    size_str = f"{total_size / 1024:.2f} KB"
+                else:
+                    size_str = f"{total_size} bytes"
+                
+                bucket_stats.append({
+                    "bucket": bucket_name,
+                    "total_size_bytes": total_size,
+                    "size_formatted": size_str,
+                    "object_count": total_objects,
+                    "error": error
+                })
+                
+                if not error:
+                    total_all_size += total_size
+                    total_all_objects += total_objects
+            
+            # Format total
+            if total_all_size >= 1024**3:
+                total_str = f"{total_all_size / 1024**3:.2f} GB"
+            elif total_all_size >= 1024**2:
+                total_str = f"{total_all_size / 1024**2:.2f} MB"
+            elif total_all_size >= 1024:
+                total_str = f"{total_all_size / 1024:.2f} KB"
+            else:
+                total_str = f"{total_all_size} bytes"
+            
+            result = {
+                "buckets": bucket_stats,
+                "summary": {
+                    "total_size_bytes": total_all_size,
+                    "size_formatted": total_str,
+                    "total_objects": total_all_objects,
+                    "bucket_count": len([b for b in bucket_stats if not b["error"]])
+                }
+            }
+            
             return [TextContent(type="text", text=json.dumps(result, indent=2))]
         
         # Custom Request Tools

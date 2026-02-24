@@ -15,6 +15,7 @@ An MCP (Model Context Protocol) server that provides access to Zadara Storage AP
 
 ### Object Storage Support
 - List, create, and delete buckets
+- **Calculate bucket sizes and statistics**
 - **Upload objects to buckets (with AWS Signature V4 authentication)**
 - **Download objects from buckets (with AWS Signature V4 authentication)**
 - **Delete objects from buckets (with AWS Signature V4 authentication)**
@@ -167,6 +168,44 @@ Delete a bucket from object storage.
 
 **Parameters:**
 - `bucket_name` (required): Name of the bucket to delete
+
+#### `object_get_bucket_sizes`
+Calculate the total size of all buckets or specific buckets.
+
+**Parameters:**
+- `bucket_names` (optional): Array of specific bucket names to calculate sizes for. If omitted, calculates sizes for all buckets.
+
+**Returns:**
+- Per-bucket statistics: name, total size in bytes, formatted size string, object count
+- Summary statistics: total size across all buckets, total object count, successful bucket count
+- Handles errors gracefully on a per-bucket basis
+
+**Features:**
+- Automatically handles pagination for buckets with >1000 objects
+- Supports calculating sizes for all buckets or specific subsets
+- Human-readable size formatting (bytes, KB, MB, GB)
+- Continues processing remaining buckets if one fails
+
+**Example Response:**
+```json
+{
+  "buckets": [
+    {
+      "bucket": "backup",
+      "total_size_bytes": 1073741824,
+      "size_formatted": "1.00 GB",
+      "object_count": 1523,
+      "error": null
+    }
+  ],
+  "summary": {
+    "total_size_bytes": 5368709120,
+    "size_formatted": "5.00 GB",
+    "total_objects": 4567,
+    "bucket_count": 11
+  }
+}
+```
 
 #### `object_list_objects`
 List objects in a bucket.

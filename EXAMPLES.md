@@ -123,6 +123,40 @@ Example intervals:
 
 ⚠️ **Warning**: Bucket must be empty before deletion!
 
+#### Get Bucket Sizes
+```
+"Show me the size of all my buckets"
+"Calculate the total size of bucket 'backup'"
+"How much storage am I using across all buckets?"
+"What's the size of buckets 'backup', 'media', and 'logs'?"
+```
+
+**How it works:**
+- Calculates total size by iterating through all objects in each bucket
+- Automatically handles pagination for buckets with >1000 objects
+- Returns both raw bytes and human-readable formatted sizes (KB, MB, GB)
+- Provides per-bucket statistics and summary across all buckets
+- Continues processing if individual buckets fail
+
+**Example Queries:**
+```
+User: "Show me the size of all my buckets"
+Claude: [calls object_get_bucket_sizes with no parameters, returns all bucket sizes]
+
+User: "How big is the backup bucket?"
+Claude: [calls object_get_bucket_sizes with bucket_names: ["backup"]]
+
+User: "Calculate sizes for backup, media, and logs buckets"
+Claude: [calls object_get_bucket_sizes with bucket_names: ["backup", "media", "logs"]]
+```
+
+**Response includes:**
+- Bucket name and object count
+- Total size in bytes
+- Formatted size (e.g., "1.50 GB", "523.45 MB")
+- Summary statistics across all processed buckets
+- Error information if any bucket fails
+
 ### Object Management
 
 #### List Objects

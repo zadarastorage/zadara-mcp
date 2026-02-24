@@ -5,6 +5,22 @@ All notable changes to the Zadara Storage MCP Server will be documented in this 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.3.0] - 2026-02-24
+
+### Added
+- **Bucket Size Calculation**: New `object_get_bucket_sizes` tool for calculating total size of buckets
+  - Automatically calculates sizes for all buckets or specific buckets
+  - Returns detailed statistics including object count, total size in bytes, and formatted size strings
+  - Supports pagination for buckets with large numbers of objects (>1000)
+  - Provides summary statistics across all buckets
+  - Handles errors gracefully on a per-bucket basis
+
+### Technical
+- Implemented pagination support with continuation tokens for large object lists
+- Added XML parsing for bucket listing and object iteration
+- Enhanced error handling to allow partial results when some buckets fail
+- Human-readable size formatting (bytes, KB, MB, GB)
+
 ## [1.2.0] - 2026-02-20
 
 ### Changed
